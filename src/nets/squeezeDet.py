@@ -19,10 +19,12 @@ from nn_skeleton import ModelSkeleton
 class SqueezeDet(ModelSkeleton):
   def __init__(self, mc, gpu_id):
     with tf.device('/gpu:{}'.format(gpu_id)):
-      ModelSkeleton.__init__(self, mc)
+      ModelSkeleton.__init__(self, mc) # Initializes inputs
 
-      self._add_forward_graph()
-      self._add_interpretation_graph()
+      self._add_forward_graph() #creates a simple network (with fire layers) with the last conv layer stored in
+      #self.pred. self.pred has 72 feature maps: 9_boxes * ( 3_classes + 4_deltas + 1_confidence_score )
+      self._add_interpretation_graph() #creates class probabilityes, bbox coordinates, and probabilities
+      # includes a bunch of summary ops to capture the flow of roi calculation
       self._add_loss_graph()
       self._add_train_graph()
       self._add_viz_graph()
@@ -47,6 +49,8 @@ class SqueezeDet(ModelSkeleton):
         'fire2', pool1, s1x1=16, e1x1=64, e3x3=64, freeze=False)
     fire3 = self._fire_layer(
         'fire3', fire2, s1x1=16, e1x1=64, e3x3=64, freeze=False)
+    #combination of convolution with stride of 1 and pooling with stride 2 is more expensive as compared to
+    #applying a convolution with stride of 2 directly
     pool3 = self._pooling_layer(
         'pool3', fire3, size=3, stride=2, padding='VALID')
 
@@ -81,6 +85,9 @@ class SqueezeDet(ModelSkeleton):
   def _fire_layer(self, layer_name, inputs, s1x1, e1x1, e3x3, freeze=False):
     """Fire layer constructor.
 
+    SqueezeNet is built upon Fire Module, which is comprised of a squeeze layer as input, and two parallel expand layers as output.
+    The alternating squeeze and expand layers effectively reduces parameter size without losing too much accuracy.
+
     Args:
       layer_name: layer name
       inputs: input tensor
@@ -101,5 +108,7 @@ class SqueezeDet(ModelSkeleton):
     ex3x3 = self._conv_layer(
         layer_name+'/expand3x3', sq1x1, filters=e3x3, size=3, stride=1,
         padding='SAME', freeze=freeze)
+
+    """ Expansion layers will be concatenated below"""
 
     return tf.concat(3, [ex1x1, ex3x3], name=layer_name+'/concat')

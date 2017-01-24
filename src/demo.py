@@ -13,9 +13,9 @@ from __future__ import print_function
 
 import cv2
 import time
-import sys
+#import sys
 import os
-import glob 
+import glob #delivers path search according to the rules used by the Unix shell
 
 import numpy as np
 import tensorflow as tf

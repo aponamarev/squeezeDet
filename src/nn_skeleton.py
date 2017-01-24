@@ -126,6 +126,7 @@ class ModelSkeleton:
 
       # probability
       num_class_probs = mc.ANCHOR_PER_GRID*mc.CLASSES
+      # This part carves out layers responsible for class probabilities in every box (3_classes * 9_boxes)
       self.pred_class_probs = tf.reshape(
           tf.nn.softmax(
               tf.reshape(
@@ -138,6 +139,7 @@ class ModelSkeleton:
       )
       
       # confidence
+      # This part carves out layers for confidence per easy box
       num_confidence_scores = mc.ANCHOR_PER_GRID+num_class_probs
       self.pred_conf = tf.sigmoid(
           tf.reshape(
@@ -148,6 +150,7 @@ class ModelSkeleton:
       )
 
       # bbox_delta
+      # This last part carves out layers responsible of delta calcs
       self.pred_box_delta = tf.reshape(
           preds[:, :, :, num_confidence_scores:],
           [mc.BATCH_SIZE, mc.ANCHORS, 4],
@@ -155,65 +158,78 @@ class ModelSkeleton:
       )
 
       # number of object. Used to normalize bbox and classification loss
+      '''
+        # A tensor where an element is 1 if the corresponding box is "responsible"
+        # for detection an object and 0 otherwise.
+        self.input_mask = tf.placeholder(
+        tf.float32, [mc.BATCH_SIZE, mc.ANCHORS, 1], name='box_mask')
+      '''
       self.num_objects = tf.reduce_sum(self.input_mask, name='num_objects')
 
     with tf.variable_scope('bbox') as scope:
-      with tf.variable_scope('stretching'):
-        delta_x, delta_y, delta_w, delta_h = tf.unpack(
-            self.pred_box_delta, axis=2)
+        with tf.variable_scope('stretching'):
+            delta_x, delta_y, delta_w, delta_h = tf.unpack(
+                self.pred_box_delta, axis=2)
 
-        anchor_x = mc.ANCHOR_BOX[:, 0]
-        anchor_y = mc.ANCHOR_BOX[:, 1]
-        anchor_w = mc.ANCHOR_BOX[:, 2]
-        anchor_h = mc.ANCHOR_BOX[:, 3]
+            anchor_x = mc.ANCHOR_BOX[:, 0] #0 is for x
+            anchor_y = mc.ANCHOR_BOX[:, 1] #1 is for y
+            anchor_w = mc.ANCHOR_BOX[:, 2] #2 is for w
+            anchor_h = mc.ANCHOR_BOX[:, 3] #3 is for h
 
-        box_center_x = tf.identity(
-            anchor_x + delta_x * anchor_w, name='bbox_cx')
-        box_center_y = tf.identity(
-            anchor_y + delta_y * anchor_h, name='bbox_cy')
-        box_width = tf.identity(
-            anchor_w * util.safe_exp(delta_w, mc.EXP_THRESH),
-            name='bbox_width')
-        box_height = tf.identity(
-            anchor_h * util.safe_exp(delta_h, mc.EXP_THRESH),
-            name='bbox_height')
+            # let's copy the result of box adjustments
+            box_center_x = tf.identity(
+                anchor_x + delta_x * anchor_w, name='bbox_cx')
+            box_center_y = tf.identity(
+                anchor_y + delta_y * anchor_h, name='bbox_cy')
+            box_width = tf.identity(
+                anchor_w * util.safe_exp(delta_w, mc.EXP_THRESH),
+                name='bbox_width')
+            box_height = tf.identity(
+                anchor_h * util.safe_exp(delta_h, mc.EXP_THRESH),
+                name='bbox_height')
 
-        self._activation_summary(delta_x, 'delta_x')
-        self._activation_summary(delta_y, 'delta_y')
-        self._activation_summary(delta_w, 'delta_w')
-        self._activation_summary(delta_h, 'delta_h')
+            '''
+            _activation_summary captures summaries for tensorboard. The summary includes the historgram for the layer
+            and scalars for sparcity, mean, min, max
+            '''
+            self._activation_summary(delta_x, 'delta_x')
+            self._activation_summary(delta_y, 'delta_y')
+            self._activation_summary(delta_w, 'delta_w')
+            self._activation_summary(delta_h, 'delta_h')
 
-        self._activation_summary(box_center_x, 'bbox_cx')
-        self._activation_summary(box_center_y, 'bbox_cy')
-        self._activation_summary(box_width, 'bbox_width')
-        self._activation_summary(box_height, 'bbox_height')
+            self._activation_summary(box_center_x, 'bbox_cx')
+            self._activation_summary(box_center_y, 'bbox_cy')
+            self._activation_summary(box_width, 'bbox_width')
+            self._activation_summary(box_height, 'bbox_height')
 
-      with tf.variable_scope('trimming'):
-        xmins, ymins, xmaxs, ymaxs = util.bbox_transform(
-            [box_center_x, box_center_y, box_width, box_height])
+        with tf.variable_scope('trimming'):
+            """util.bbox_transform convert a bbox of form [cx, cy, w, h] to [xmin, ymin, xmax, ymax]. Works for numpy array or list of tensors."""
+            xmins, ymins, xmaxs, ymaxs = util.bbox_transform([box_center_x, box_center_y, box_width, box_height])
+            '''
+            This part makes sure that the predicted values do not extend beyond the images size
+            '''
+            # The max x position is mc.IMAGE_WIDTH - 1 since we use zero-based
+            # pixels. Same for y.
+            xmins = tf.minimum(
+                tf.maximum(0.0, xmins), mc.IMAGE_WIDTH-1.0, name='bbox_xmin')
+            self._activation_summary(xmins, 'box_xmin')
 
-        # The max x position is mc.IMAGE_WIDTH - 1 since we use zero-based
-        # pixels. Same for y.
-        xmins = tf.minimum(
-            tf.maximum(0.0, xmins), mc.IMAGE_WIDTH-1.0, name='bbox_xmin')
-        self._activation_summary(xmins, 'box_xmin')
+            ymins = tf.minimum(
+                tf.maximum(0.0, ymins), mc.IMAGE_HEIGHT-1.0, name='bbox_ymin')
+            self._activation_summary(ymins, 'box_ymin')
 
-        ymins = tf.minimum(
-            tf.maximum(0.0, ymins), mc.IMAGE_HEIGHT-1.0, name='bbox_ymin')
-        self._activation_summary(ymins, 'box_ymin')
+            xmaxs = tf.maximum(
+                tf.minimum(mc.IMAGE_WIDTH-1.0, xmaxs), 0.0, name='bbox_xmax')
+            self._activation_summary(xmaxs, 'box_xmax')
 
-        xmaxs = tf.maximum(
-            tf.minimum(mc.IMAGE_WIDTH-1.0, xmaxs), 0.0, name='bbox_xmax')
-        self._activation_summary(xmaxs, 'box_xmax')
+            ymaxs = tf.maximum(
+                tf.minimum(mc.IMAGE_HEIGHT-1.0, ymaxs), 0.0, name='bbox_ymax')
+            self._activation_summary(ymaxs, 'box_ymax')
 
-        ymaxs = tf.maximum(
-            tf.minimum(mc.IMAGE_HEIGHT-1.0, ymaxs), 0.0, name='bbox_ymax')
-        self._activation_summary(ymaxs, 'box_ymax')
-
-        self.det_boxes = tf.transpose(
-            tf.pack(util.bbox_transform_inv([xmins, ymins, xmaxs, ymaxs])),
-            (1, 2, 0), name='bbox'
-        )
+            self.det_boxes = tf.transpose(
+                tf.pack(util.bbox_transform_inv([xmins, ymins, xmaxs, ymaxs])),
+                (1, 2, 0), name='bbox'
+            )
 
     with tf.variable_scope('IOU'):
       def _tensor_iou(box1, box2):
